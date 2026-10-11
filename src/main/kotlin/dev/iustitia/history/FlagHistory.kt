@@ -114,6 +114,15 @@ object FlagHistory {
     /** Peak VL reached per (player, check) this session — for the max-VL-per-check bar + card. */
     private val maxVlByUuidCheck = ConcurrentHashMap<UUID, ConcurrentHashMap<String, Double>>()
 
+    /** True once the in-memory store already holds the persisted history: set when
+     *  [dev.iustitia.persistence.PersistenceManager] loads it or schedules a save over it, cleared
+     *  by [reset]. [mergePersisted] sums counts and appends flags, so it is not idempotent — a
+     *  second load into a store that already holds the persisted data double-counts it. */
+    @Volatile private var holdsPersisted = false
+
+    fun holdsPersisted(): Boolean = holdsPersisted
+    fun markHoldsPersisted() { holdsPersisted = true }
+
     /** Record a flag (called from [dev.iustitia.checks.Check.flag] for every flag, verbose-level).
      *  [evidence] is the optional per-flag "why" payload (see [Evidence]); `null` for checks that
      *  don't enrich. */
@@ -351,7 +360,9 @@ object FlagHistory {
                 val set = alertedChecksByUuid.computeIfAbsent(uuid) { HashSet() }
                 synchronized(set) { set.addAll(alerted) }
             }
-            if (lastAlertWallMs > 0) lastAlertWallMsByUuid[uuid] = lastAlertWallMs
+            // max, not assign: an older persisted clock must not pull a newer live one back and
+            // keep a faded tier up longer.
+            if (lastAlertWallMs > 0) lastAlertWallMsByUuid.merge(uuid, lastAlertWallMs, ::maxOf)
             if (fc.isNotEmpty()) {
                 val m = flagCounts.computeIfAbsent(uuid) { ConcurrentHashMap() }
                 fc.forEach { (cid, c) -> m.merge(cid, c) { a, b -> a + b } }
@@ -454,6 +465,7 @@ object FlagHistory {
             nameByUuid.clear()
             flagCounts.clear()
             maxVlByUuidCheck.clear()
+            holdsPersisted = false
         } catch (_: Throwable) {
             // fail-open
         }
