@@ -68,11 +68,20 @@ object PersistenceManager {
         try { loadNotes() } catch (_: Throwable) {}
         try { loadHistory() } catch (_: Throwable) {}
         try { loadExemptions() } catch (_: Throwable) {}
+        FlagHistory.markHoldsPersisted()
     }
 
-    /** React to the persistence toggle changing: on → load + schedule a full save; off → stop. */
+    /** React to the persistence toggle: on → load + schedule a full save; off → stop. Runs on every
+     *  config reload, not only on a flip, so the load is skipped when the in-memory history already
+     *  holds the persisted store (loaded at startup/world join, or saved over since) — loading it
+     *  again would double every flag count and timeline row. */
     fun onToggle(nowEnabled: Boolean) {
-        if (nowEnabled) { try { loadOnStartup(); saveNote(); saveHistory(); saveExemptions() } catch (_: Throwable) {} }
+        if (nowEnabled) {
+            try {
+                if (!FlagHistory.holdsPersisted()) loadOnStartup()
+                saveNote(); saveHistory(); saveExemptions()
+            } catch (_: Throwable) {}
+        }
         // when turning off we simply stop scheduling saves; existing in-memory state stays.
     }
 
@@ -109,7 +118,13 @@ object PersistenceManager {
     }
 
     // ---- history ----
-    fun saveHistory() { if (enabled) schedule(historyDirty = true) }
+    fun saveHistory() {
+        if (!enabled) return
+        // The write replaces the persisted history with the in-memory one, so from here on the
+        // in-memory store is the persisted record (e.g. after `/ius clear all`).
+        FlagHistory.markHoldsPersisted()
+        schedule(historyDirty = true)
+    }
 
     // ---- exemptions ----
     fun saveExemptions() { if (enabled) schedule(exemptionsDirty = true) }
